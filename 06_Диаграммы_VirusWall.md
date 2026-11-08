@@ -4,22 +4,23 @@
 
 ```mermaid
 flowchart TB
-    UI[GUI / CLI] --> API[Локальный API]
-    API --> CORE[Центральный сервис и оркестратор]
-    CORE --> SCAN[Сканирующий модуль]
-    SCAN --> SIG[Сигнатурный анализ]
-    SCAN --> HEU[Эвристический анализ]
-    CORE --> BEH[Поведенческий анализ]
-    CORE --> POL[Политика принятия решения]
-    POL --> Q[Карантин]
-    POL --> NOTIFY[Уведомления]
-    CORE --> LOG[Журналирование и отчёты]
-    CORE --> UPD[Обновлятор]
-    UPD --> DB[(База сигнатур)]
-    CORE --> SELF[Самозащита]
-    OS[Операционная система] --> ADAPT[Платформенный адаптер]
-    ADAPT --> CORE
-    ADAPT --> OS
+    UI[GUI PySide6 / CLI] --> CORE[Центральный модуль core.py]
+    OWNER[(Каталог данных: config / базы / журнал / карантин)] -.-> CORE
+    OS[Операционная система] --> RT[watchdog: события ФС]
+    OS --> PROC[psutil: процессы и соединения]
+    OS --> NET[Scapy: пакеты / PCAP]
+    RT --> CORE
+    PROC --> BEH[Поведенческий анализ behavior_templates]
+    CORE --> SCAN[Сканер scanner.py]
+    SCAN --> SIG[Сигнатуры: SHA-256/MD5/шаблоны]
+    SCAN --> HEU[Эвристика]
+    CORE --> POL[Политика: observe / notify / quarantine]
+    POL --> Q[Карантин AES-256-GCM]
+    CORE --> JOURNAL[Журнал: хеш-цепочка]
+    CORE --> UPD[Обновления Ed25519]
+    UPD --> DB[(База сигнатур JSON)]
+    CORE --> SELF[Самозащита: InstanceLock, IntegrityGuard, doctor]
+    JOURNAL --> NOTIFY[Уведомления GUI/ОС]
 ```
 
 ## Последовательность обнаружения
@@ -27,24 +28,29 @@ flowchart TB
 ```mermaid
 sequenceDiagram
     participant OS as ОС
-    participant A as Адаптер
-    participant S as Сервис
+    participant M as Монитор watchdog
+    participant S as Ядро
     participant C as Сканер
     participant D as Детекторы
     participant Q as Карантин
     participant L as Журнал
-    participant UI as GUI
-    OS->>A: Событие записи/запуска файла
-    A->>S: FileEvent
-    S->>A: Временно задержать операцию
-    S->>C: Запустить анализ
-    C->>D: Хэш, метаданные, поведение
+    participant U as Пользователь
+    OS->>M: Событие записи файла
+    M->>S: Событие (дедупликация по путь+mtime)
+    S->>L: Запись file_event
+    S->>C: Проверить файл
+    C->>D: SHA-256/MD5, шаблоны, эвристика
     D-->>C: Вердикт и причины
-    C-->>S: Результат анализа
-    S->>Q: Изолировать объект
-    S->>A: Заблокировать действие
-    S->>L: Записать событие
-    L-->>UI: Уведомление и отчёт
+    C-->>S: ScanResult
+    alt политика quarantine и режим armed
+        S->>Q: Изолировать AES-256-GCM
+    else политика notify
+        S->>U: Уведомление
+    else политика observe
+        S->>L: Только журнал
+    end
+    S->>L: threat_detected + reaction_ms
+    L-->>U: Уведомление GUI
 ```
 
 ## Развёртывание
@@ -52,27 +58,20 @@ sequenceDiagram
 ```mermaid
 flowchart LR
     subgraph Windows
-      WS[Windows Service]
-      WF[File-system adapter]
-      WG[GUI]
+      WG[GUI/CLI Python] --> WRT[watchdog ReadDirectoryChangesW]
+      WPS[psutil] --> WG
     end
     subgraph Linux
-      LS[systemd daemon]
-      LF[fanotify/inotify adapter]
-      LG[GUI/CLI]
+      LG[GUI/CLI Python] --> LRT[watchdog inotify]
+      LPS[psutil] --> LG
     end
     subgraph macOS
-      MS[launchd daemon]
-      MF[Endpoint Security adapter]
-      MG[GUI]
+      MG[GUI/CLI Python] --> MRT[watchdog kqueue/FSEvents]
+      MPS[psutil] --> MG
     end
-    WS --> WCORE[Общее ядро VirusWall]
-    LS --> LCORE[Общее ядро VirusWall]
-    MS --> MCORE[Общее ядро VirusWall]
-    WF --> WS
-    LF --> LS
-    MF --> MS
-    WG --> WS
-    LG --> LS
-    MG --> MS
+    WG --> COMMON[Общее ядро VirusWall: сканер / карантин / журнал / обновления]
+    LG --> COMMON
+    MG --> COMMON
+    COMMON --> STORE[(Каталог данных 0700)]
+    NOTE[Служба/драйвер: точка расширения, не реализовано] -.-> COMMON
 ```
