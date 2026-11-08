@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable
 
 from .models import now_utc
+from .config import matches_exclusion
 
 
 @dataclass(frozen=True)
@@ -23,16 +24,16 @@ class DirectoryMonitor:
     """Фиксирует создание, изменение и удаление обычных файлов между опросами."""
 
     def __init__(self, root: str | Path, callback: Callable[[FileEvent], None] | None = None,
-                 exclusions: list[str] | None = None):
+                  exclusions: list[str] | None = None):
         self.root = Path(root).expanduser().absolute()
         if not self.root.is_dir():
             raise NotADirectoryError(str(self.root))
         self.callback = callback
-        self.exclusions = [Path(x).expanduser().absolute() for x in (exclusions or [])]
+        self.exclusions = list(exclusions or [])
         self._previous = self._snapshot()
 
     def _excluded(self, path: Path) -> bool:
-        return any(path == root or root in path.parents for root in self.exclusions)
+        return matches_exclusion(self.exclusions, path)
 
     def _snapshot(self) -> dict[str, tuple[int, int]]:
         found = {}

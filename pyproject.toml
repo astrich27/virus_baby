@@ -4,10 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "viruswall-labs"
-version = "0.1.0"
+version = "0.2.0"
 description = "Учебный кроссплатформенный антивирусный анализатор"
 requires-python = ">=3.10"
-dependencies = ["psutil>=5.9", "scapy>=2.5", "cryptography>=42", "PySide6-Essentials>=6.8,<7"]
+dependencies = ["psutil>=5.9", "scapy>=2.5", "cryptography>=42", "PySide6-Essentials>=6.8,<7",
+                "watchdog>=4.0"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]

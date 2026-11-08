@@ -199,3 +199,33 @@ class NetworkAnalyzer:
         if len(self._dns) >= self.rules.max_dns_queries:
             found.append(Finding("network", "Network.DNSBurst", "medium", "Много DNS-запросов", "dns_burst"))
         return found
+
+    def analyze_pcap(self, path: str | Path, limit: int = 10000) -> dict:
+        """Разобрать сохранённый файл захвата (pcap/pcapng) тем же конвейером правил."""
+        if not 1 <= limit <= 1_000_000:
+            raise ValueError("Недопустимый предел пакетов")
+        try:
+            from scapy.utils import rdpcap
+        except ImportError as exc:  # pragma: no cover
+            raise RuntimeError("Для разбора PCAP установите scapy") from exc
+        from pathlib import Path as _Path
+        file = _Path(path)
+        if not file.is_file():
+            raise ValueError("Файл PCAP не найден")
+        analyzed: list[dict] = []
+        findings_total = 0
+        parsed = 0
+        for index, packet in enumerate(rdpcap(str(file))):
+            if index >= limit:
+                break
+            info = parse_packet(packet)
+            if info is None:
+                continue
+            parsed += 1
+            found = self.analyze_packet(info)
+            if found:
+                findings_total += len(found)
+                analyzed.append({"packet": info.to_dict(),
+                                 "findings": [finding.to_dict() for finding in found]})
+        return {"file": str(file), "packets_analyzed": parsed,
+                "flows": len(self._flows), "suspicious": analyzed, "findings_total": findings_total}

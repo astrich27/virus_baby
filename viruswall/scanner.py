@@ -1,4 +1,4 @@
-"""Потоковое сканирование файлов и каталогов."""
+"""Потоковое сканирование файлов и каталогов: хэш-сигнатуры (SHA-256/MD5) и байтовые шаблоны."""
 
 import os
 from pathlib import Path
@@ -6,26 +6,30 @@ from time import monotonic
 from collections.abc import Callable, Iterator
 
 from .models import Finding, ScanResult, now_utc
-from .signatures import SignatureDatabase, sha256_file
+from .signatures import SignatureDatabase, hashes_file
+from .config import matches_exclusion
+
+PATTERN_SAMPLE_LIMIT = 2048 * 1024
 
 
 class FileScanner:
-    """Сканер SHA-256 с исключениями и продолжением после ошибок доступа."""
+    """Сканер сигнатур с исключениями (пути и маски) и продолжением после ошибок доступа."""
 
     def __init__(self, signatures: SignatureDatabase | None, exclusions: list[str] | None = None,
                  analyzers: list[Callable[[Path], list[Finding]]] | None = None):
         self.signatures = signatures
-        self.exclusions = [Path(item).expanduser().absolute() for item in (exclusions or [])]
+        self.exclusions = list(exclusions or [])
         self.analyzers = analyzers or []
 
     def excluded(self, path: Path) -> bool:
         absolute = path.absolute()
-        return any(absolute == root or root in absolute.parents for root in self.exclusions)
+        return matches_exclusion(self.exclusions, absolute)
 
     def scan_file(self, path: str | Path) -> ScanResult:
         target = Path(path).expanduser().absolute()
         started = monotonic()
         stamp = now_utc()
+        md5 = None
         if self.excluded(target):
             return ScanResult(str(target), target.name, None, "excluded", stamp, monotonic() - started)
         if target.is_symlink():
@@ -33,19 +37,34 @@ class FileScanner:
         try:
             if not target.is_file():
                 raise ValueError("Путь не является обычным файлом")
-            digest = sha256_file(target)
-            signature = self.signatures.lookup(digest) if self.signatures else None
+            digest, md5 = hashes_file(target)
+            signature = None
+            matched_by = None
+            if self.signatures:
+                signature = self.signatures.lookup(digest)
+                matched_by = "sha256"
+                if signature is None and md5:
+                    signature = self.signatures.lookup_md5(md5)
+                    matched_by = "md5"
             findings = []
             if signature:
-                findings.append(Finding("signature", signature["name"], "high", "Совпадение SHA-256", digest))
+                findings.append(Finding("signature", signature["name"], "high",
+                                        f"Совпадение {matched_by}", digest))
+            if self.signatures and not signature:
+                with open(target, "rb") as stream:
+                    sample = stream.read(min(PATTERN_SAMPLE_LIMIT, os.path.getsize(target) or 1))
+                for item in self.signatures.match_sample(sample):
+                    findings.append(Finding("signature", item["name"], "high",
+                                            "Совпадение байтового шаблона", digest))
+                    signature = item
+                    break
             for analyzer in self.analyzers:
                 findings.extend(analyzer(target))
+            threat_name = signature["name"] if signature else findings[0].name if findings else None
+            category = signature["category"] if signature else "heuristic" if findings else None
             return ScanResult(str(target), target.name, digest,
                               "threat" if signature else "suspicious" if findings else "clean",
-                              stamp, monotonic() - started,
-                              signature["name"] if signature else findings[0].name if findings else None,
-                              signature["category"] if signature else "heuristic" if findings else None,
-                              findings)
+                              stamp, monotonic() - started, threat_name, category, findings)
         except (OSError, ValueError) as exc:
             return ScanResult(str(target), target.name, None, "error", stamp,
                               monotonic() - started, error=str(exc))

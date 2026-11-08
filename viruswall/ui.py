@@ -123,10 +123,51 @@ class VirusWallWindow(QMainWindow):
         self._background_thread = threading.Thread(target=self.app.run_background,
                                                    args=(self._background_stop,), daemon=True)
         self._background_thread.start()
+        self._notify_queue: list[dict] = []
+        self.app.journal.subscribe(self._queue_notification)
+        self._build_tray()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._periodic_refresh)
         self.timer.start(5000)
         self.statusBar().showMessage("Готово. Сканирование и мониторинг работают локально.")
+
+    def _queue_notification(self, record: dict) -> None:
+        """Подписчик журнала: готовит высокоуровневые события к системному уведомлению."""
+        if record.get("severity") not in ("high", "critical") or record.get("event_type") == "file_scan":
+            return
+        self._notify_queue.append(record)
+
+    def _build_tray(self) -> None:
+        from PySide6.QtWidgets import QSystemTrayIcon
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray = None
+            return
+        try:
+            from PySide6.QtGui import QIcon
+            style = self.style()
+            self.tray = QSystemTrayIcon(style.standardIcon(style.StandardPixmap.SP_ComputerIcon), self)
+            self.tray.setToolTip("VirusWall — антивирусный анализатор")
+            self.tray.show()
+        except (OSError, RuntimeError):
+            self.tray = None
+
+    def _drain_notifications(self) -> None:
+        """Показать системное уведомление (Ф-22) для последних находок."""
+        while self._notify_queue:
+            record = self._notify_queue.pop(0)
+            title = {"realtime_detection": "Защита в реальном времени",
+                     "realtime_event": None,
+                     "process": "Поведенческий анализ", "network": "Сетевой анализ",
+                     "quarantine_limit": "Карантин", "tamper_detected": "Самозащита"}.get(
+                record.get("event_type"), "VirusWall")
+            if title is None:
+                continue
+            text = f"{record.get('threat_name') or 'Событие'}: {record.get('target', '')}"
+            if getattr(self, "tray", None) is not None:
+                self.tray.showMessage(title, text[:200])
+            else:
+                self.statusBar().showMessage(f"{title}: {text[:200]}", 10000)
+            break
 
     def _new_tab(self, title: str) -> QVBoxLayout:
         widget = QWidget()
@@ -563,18 +604,25 @@ class VirusWallWindow(QMainWindow):
             return
         self._stop_watch()
         try:
-            monitor = self.app.watch_directory(path)
-            self._watch_stop = threading.Event()
-            self._watch_thread = threading.Thread(target=monitor.run,
-                                                  kwargs={"stop": self._watch_stop}, daemon=True)
-            self._watch_thread.start()
+            monitor = self.app.realtime_monitor(path)
+            monitor.start()
+            self._watch_stop = None
+            self._watch_thread = None
+            self._watch_monitor = monitor
             self._watch_path = path
-            self.watch_label.setText(f"Наблюдение: {path}")
-            self._notify("Мониторинг файлов запущен")
+            policy = self.app.config.realtime["action_on_detection"]
+            self.watch_label.setText(f"Защита (реальное время): {path}\n"
+                                     f"Backend: {monitor.backend}; политика: {policy}; "
+                                     f"автокарантин: {'включён' if monitor.armed else 'выключен'}")
+            self._notify("Защита каталога в реальном времени запущена")
         except (OSError, RuntimeError) as exc:
             self._notify(str(exc), warning=True)
 
     def _stop_watch(self) -> None:
+        monitor = getattr(self, "_watch_monitor", None) or (self._watch_thread and None)
+        if monitor is not None:
+            monitor.stop()
+            self._watch_monitor = None
         if self._watch_stop:
             self._watch_stop.set()
         if self._watch_thread:
@@ -620,6 +668,7 @@ class VirusWallWindow(QMainWindow):
     def _periodic_refresh(self) -> None:
         self._refresh_dashboard()
         self._refresh_journal()
+        self._drain_notifications()
         if self.tabs.currentIndex() == 3:
             self._refresh_processes()
         elif self.tabs.currentIndex() == 4:
@@ -637,6 +686,10 @@ class VirusWallWindow(QMainWindow):
         self._stop_watch()
         self._background_stop.set()
         self._background_thread.join(timeout=3)
+        try:
+            self.app.lock.release()
+        except (OSError, RuntimeError):
+            pass
         event.accept()
 
 
