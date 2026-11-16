@@ -30,7 +30,13 @@ python3 -m venv .venv
 
 В Windows используйте `.venv\Scripts\python.exe` вместо `.venv/bin/python`. Команда `gui` открывает отдельное desktop-окно VirusWall на Qt; браузер и веб-сервер не используются. Данные по умолчанию хранятся в `~/.viruswall` (права 0700); другое расположение задаётся `--data-dir PATH`.
 
-При первом запуске база содержит только безвредную тестовую сигнатуру EICAR. Примеры команд:
+При первом запуске база содержит только безвредную тестовую сигнатуру EICAR. Публичная база из 9 655 SHA-256 (ESET, stalkerware, Amnesty) лежит в [data/signatures.json](data/signatures.json); установка и атрибуция описаны в [data/README.md](data/README.md):
+
+```bash
+python tools/import_signatures.py --source data/signatures.json
+```
+
+Примеры команд:
 
 ```bash
 python -m viruswall scan /путь/к/файлу --report report.txt
