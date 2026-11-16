@@ -83,11 +83,14 @@ class VirusWall:
         self._record_scan(result)
         return result
 
-    def scan_directory(self, path: str | Path) -> list[ScanResult]:
-        results = list(self.scanner.scan_directory(path))
-        for result in results:
+    def scan_directory_iter(self, path: str | Path, *, checkpoint=None):
+        """Потоково сканировать каталог, регистрируя каждый результат по мере готовности."""
+        for result in self.scanner.scan_directory(path, checkpoint=checkpoint):
             self._record_scan(result)
-        return results
+            yield result
+
+    def scan_directory(self, path: str | Path, *, checkpoint=None) -> list[ScanResult]:
+        return list(self.scan_directory_iter(path, checkpoint=checkpoint))
 
     def _record_scan(self, result: ScanResult) -> None:
         if result.status not in {"threat", "suspicious", "error"}:

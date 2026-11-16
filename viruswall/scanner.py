@@ -12,6 +12,10 @@ from .config import matches_exclusion
 PATTERN_SAMPLE_LIMIT = 2048 * 1024
 
 
+class ScanCancelled(Exception):
+    """Сигнал кооперативной отмены сканирования из интерфейса."""
+
+
 class FileScanner:
     """Сканер сигнатур с исключениями (пути и маски) и продолжением после ошибок доступа."""
 
@@ -69,7 +73,8 @@ class FileScanner:
             return ScanResult(str(target), target.name, None, "error", stamp,
                               monotonic() - started, error=str(exc))
 
-    def scan_directory(self, directory: str | Path) -> Iterator[ScanResult]:
+    def scan_directory(self, directory: str | Path, *,
+                       checkpoint: Callable[[], None] | None = None) -> Iterator[ScanResult]:
         root = Path(directory).expanduser().absolute()
         if not root.is_dir():
             raise NotADirectoryError(str(root))
@@ -80,6 +85,8 @@ class FileScanner:
             base_path = Path(base)
             dirs[:] = sorted(d for d in dirs if not self.excluded(base_path / d) and not (base_path / d).is_symlink())
             for name in sorted(files):
+                if checkpoint is not None:
+                    checkpoint()
                 yield self.scan_file(base_path / name)
             while errors:
                 error = errors.pop(0)

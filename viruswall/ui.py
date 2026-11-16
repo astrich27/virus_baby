@@ -14,15 +14,16 @@ import threading
 from PySide6.QtCore import Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QGuiApplication
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QListWidget, QMainWindow, QMessageBox,
-    QMenu, QProgressBar, QPushButton, QRadioButton, QSpinBox, QSystemTrayIcon,
-    QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
+    QAbstractItemView, QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout,
+    QGroupBox, QHBoxLayout, QHeaderView, QLabel, QLineEdit, QListWidget, QMainWindow,
+    QMessageBox, QMenu, QProgressBar, QPushButton, QRadioButton, QSpinBox,
+    QSystemTrayIcon, QTabWidget, QTableWidget, QTableWidgetItem, QVBoxLayout, QWidget,
 )
 
 from .core import VirusWall
 from .network import list_connections, list_interfaces
 from .report import evaluate, export_scan_results
+from .scanner import ScanCancelled
 from .signatures import sha256_file
 
 
@@ -116,11 +117,12 @@ QMenu::item { padding: 7px 22px; border-radius: 6px; }
 QMenu::item:selected { background: @row_selected_bg; color: @row_selected_text; }
 QMenu::item:disabled { color: @text_muted; }
 QMenu::separator { height: 1px; background: @card_border; margin: 4px 8px; }
-QScrollBar:vertical { background: transparent; width: 10px; margin: 2px; }
-QScrollBar::handle:vertical { background: @card_border; border-radius: 5px; min-height: 30px; }
+QScrollBar:vertical { background: transparent; width: 11px; margin: 2px; }
+QScrollBar::handle:vertical { background: @card_border; border-radius: 4px; min-height: 32px; }
 QScrollBar::handle:vertical:hover { background: @text_muted; }
-QScrollBar:horizontal { background: transparent; height: 10px; margin: 2px; }
-QScrollBar::handle:horizontal { background: @card_border; border-radius: 5px; min-width: 30px; }
+QScrollBar:horizontal { background: transparent; height: 12px; margin: 2px 2px 3px 2px; }
+QScrollBar::handle:horizontal { background: @card_border; border-radius: 5px; min-width: 40px;
+    margin: 1px 0; }
 QScrollBar::handle:horizontal:hover { background: @text_muted; }
 QScrollBar::add-line, QScrollBar::sub-line { height: 0; width: 0; }
 QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
@@ -154,7 +156,25 @@ _BADGE_COLORS = {
     },
 }
 
-_TABLE_HINT = "Правый клик по строке — меню действий"
+_TABLE_HINT = "Правый клик по строке — меню действий. Клик по заголовку — сортировка"
+
+
+def _sort_key(text: str):
+    """Ключ сортировки: числа сравниваются как числа, остальное — как текст."""
+    stripped = text.strip().replace(" ", "")
+    try:
+        return (0, float(stripped.replace(",", ".")))
+    except ValueError:
+        return (1, text.casefold())
+
+
+class _SortableItem(QTableWidgetItem):
+    """Элемент таблицы, который корректно сортирует числа (PID, время и т.п.)."""
+
+    def __lt__(self, other) -> bool:
+        if not isinstance(other, QTableWidgetItem):
+            return super().__lt__(other)
+        return _sort_key(self.text()) < _sort_key(other.text())
 
 
 def make_table(headers: list[str]) -> QTableWidget:
@@ -164,11 +184,55 @@ def make_table(headers: list[str]) -> QTableWidget:
     table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
     table.setAlternatingRowColors(True)
     table.setShowGrid(False)
-    table.horizontalHeader().setStretchLastSection(True)
+    table.setWordWrap(False)
+    table.setTextElideMode(Qt.TextElideMode.ElideRight)
+    table.setHorizontalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    table.setVerticalScrollMode(QAbstractItemView.ScrollMode.ScrollPerPixel)
+    table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+    header = table.horizontalHeader()
+    header.setStretchLastSection(False)
+    header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
+    header.setMinimumSectionSize(70)
+    header.setSectionsClickable(True)
+    header.setSortIndicatorShown(True)
+    header.setSortIndicator(-1, Qt.SortOrder.AscendingOrder)
     table.verticalHeader().setVisible(False)
     table.verticalHeader().setDefaultSectionSize(30)
     table.setToolTip(_TABLE_HINT)
+    table._sort_column = -1
+    table._sort_order = Qt.SortOrder.AscendingOrder
+    table._widths_initialized = False
+    table._data_signature = None
+    header.sectionClicked.connect(lambda column, t=table: _sort_by_column(t, column))
     return table
+
+
+def _fit_columns(table: QTableWidget) -> None:
+    """Подобрать ширину колонок один раз, не давая длинным путям «съесть» экран."""
+    table.resizeColumnsToContents()
+    for column in range(table.columnCount()):
+        width = table.columnWidth(column)
+        table.setColumnWidth(column, max(90, min(width, 420)))
+
+
+def _sort_by_column(table: QTableWidget, column: int) -> None:
+    """Переключить направление сортировки по клику на заголовок."""
+    if getattr(table, "_sort_column", -1) == column:
+        order = (Qt.SortOrder.DescendingOrder
+                 if getattr(table, "_sort_order", Qt.SortOrder.AscendingOrder) == Qt.SortOrder.AscendingOrder
+                 else Qt.SortOrder.AscendingOrder)
+    else:
+        order = Qt.SortOrder.AscendingOrder
+    table._sort_column = column
+    table._sort_order = order
+    table.horizontalHeader().setSortIndicator(column, order)
+    _apply_sort(table)
+
+
+def _apply_sort(table: QTableWidget) -> None:
+    column = getattr(table, "_sort_column", -1)
+    if 0 <= column < table.columnCount():
+        table.sortItems(column, getattr(table, "_sort_order", Qt.SortOrder.AscendingOrder))
 
 
 def _colorize_badges(table: QTableWidget) -> None:
@@ -191,16 +255,33 @@ def _colorize_badges(table: QTableWidget) -> None:
             item.setForeground(QColor(foreground))
 
 
-def fill_table(table: QTableWidget, rows) -> None:
+def fill_table(table: QTableWidget, rows, *, force: bool = False) -> None:
     rows = list(rows)
-    table.setRowCount(len(rows))
-    for row_no, row in enumerate(rows):
-        for col_no, value in enumerate(row):
-            item = QTableWidgetItem("" if value is None else str(value))
-            item.setToolTip(item.text())
-            table.setItem(row_no, col_no, item)
-    table.resizeColumnsToContents()
+    signature = tuple(tuple("" if value is None else str(value) for value in row) for row in rows)
+    if not force and getattr(table, "_data_signature", None) == signature:
+        _colorize_badges(table)
+        return
+    table._data_signature = signature
+    hbar = table.horizontalScrollBar().value()
+    vbar = table.verticalScrollBar().value()
+    table.setUpdatesEnabled(False)
+    try:
+        table.setRowCount(0)
+        table.setRowCount(len(rows))
+        for row_no, row in enumerate(rows):
+            for col_no, value in enumerate(row):
+                item = _SortableItem("" if value is None else str(value))
+                item.setToolTip(item.text())
+                table.setItem(row_no, col_no, item)
+        if rows and not getattr(table, "_widths_initialized", False):
+            _fit_columns(table)
+            table._widths_initialized = True
+        _apply_sort(table)
+    finally:
+        table.setUpdatesEnabled(True)
     _colorize_badges(table)
+    table.horizontalScrollBar().setValue(hbar)
+    table.verticalScrollBar().setValue(vbar)
 
 
 def make_banner(text: str) -> QLabel:
@@ -217,19 +298,66 @@ def muted_label(text: str) -> QLabel:
     return label
 
 
+class ScanController:
+    """Кооперативное управление сканированием: пауза, продолжение и остановка."""
+
+    def __init__(self):
+        self._resume = threading.Event()
+        self._resume.set()
+        self._stop = threading.Event()
+
+    @property
+    def paused(self) -> bool:
+        return not self._resume.is_set() and not self._stop.is_set()
+
+    @property
+    def stopped(self) -> bool:
+        return self._stop.is_set()
+
+    def pause(self) -> None:
+        self._resume.clear()
+
+    def resume(self) -> None:
+        self._resume.set()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._resume.set()
+
+    def checkpoint(self) -> None:
+        self._resume.wait()
+        if self._stop.is_set():
+            raise ScanCancelled()
+
+
 class ScanWorker(QThread):
     completed = Signal(object)
+    stopped = Signal(object)
     failed = Signal(str)
+    progress = Signal(int)
 
-    def __init__(self, app: VirusWall, path: Path, parent=None):
+    def __init__(self, app: VirusWall, path: Path, controller: ScanController | None = None,
+                 parent=None):
         super().__init__(parent)
         self.app = app
         self.path = path
+        self.controller = controller or ScanController()
 
     def run(self) -> None:
+        results = []
         try:
-            results = self.app.scan_directory(self.path) if self.path.is_dir() else [self.app.scan_file(self.path)]
+            if self.path.is_dir():
+                for result in self.app.scan_directory_iter(self.path,
+                                                           checkpoint=self.controller.checkpoint):
+                    results.append(result)
+                    self.progress.emit(len(results))
+            else:
+                self.controller.checkpoint()
+                results.append(self.app.scan_file(self.path))
+                self.progress.emit(1)
             self.completed.emit(results)
+        except ScanCancelled:
+            self.stopped.emit(results)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -485,6 +613,22 @@ class VirusWallWindow(QMainWindow):
         self.scan_button.setStatusTip("Запустить сканирование выбранного пути")
         self.scan_button.clicked.connect(self._scan_selected)
         row.addWidget(self.scan_button)
+        self.pause_button = QPushButton("Пауза")
+        self.pause_button.setObjectName("ghost")
+        self.pause_button.setEnabled(False)
+        self.pause_button.setToolTip("Приостанавливает сканирование после текущего файла. "
+                                     "Во время паузы кнопка называется «Продолжить».")
+        self.pause_button.setStatusTip("Приостановить или продолжить сканирование")
+        self.pause_button.clicked.connect(self._toggle_pause)
+        row.addWidget(self.pause_button)
+        self.stop_button = QPushButton("Остановить")
+        self.stop_button.setObjectName("danger")
+        self.stop_button.setEnabled(False)
+        self.stop_button.setToolTip("Полностью останавливает сканирование. "
+                                    "Уже проверенные файлы останутся в таблице.")
+        self.stop_button.setStatusTip("Остановить сканирование")
+        self.stop_button.clicked.connect(self._stop_scan)
+        row.addWidget(self.stop_button)
         layout.addLayout(row)
         self.scan_progress = QProgressBar()
         self.scan_progress.setToolTip("Индикатор работы: показывается, пока идёт сканирование.")
@@ -1000,17 +1144,57 @@ class VirusWallWindow(QMainWindow):
         if not path.exists():
             self._notify(f"Путь не найден: {path}", warning=True)
             return
+        self._scan_controller = ScanController()
+        self._scan_path = path
+        self._scan_count = 0
         self.scan_button.setEnabled(False)
         self.quick_button.setEnabled(False)
+        self.pause_button.setText("Пауза")
+        self.pause_button.setEnabled(True)
+        self.stop_button.setEnabled(True)
         self.scan_progress.setRange(0, 0)
         self.scan_progress.show()
         self.scan_summary.setText(f"Проверяется: {path}")
         self.statusBar().showMessage(f"Сканирование началось: {path}")
-        self._scan_worker = ScanWorker(self.app, path, self)
+        self._scan_worker = ScanWorker(self.app, path, self._scan_controller, self)
         self._scan_worker.completed.connect(self._scan_completed)
+        self._scan_worker.stopped.connect(self._scan_stopped)
+        self._scan_worker.progress.connect(self._scan_progress)
         self._scan_worker.failed.connect(lambda error: self._notify(f"Ошибка сканирования: {error}", warning=True))
         self._scan_worker.finished.connect(self._scan_finished)
         self._scan_worker.start()
+
+    def _toggle_pause(self) -> None:
+        controller = getattr(self, "_scan_controller", None)
+        if controller is None or not (self._scan_worker and self._scan_worker.isRunning()):
+            return
+        if controller.paused:
+            controller.resume()
+            self.pause_button.setText("Пауза")
+            self.scan_summary.setText(f"Проверяется: {self._scan_path}")
+            self.statusBar().showMessage("Сканирование продолжено.")
+        else:
+            controller.pause()
+            self.pause_button.setText("Продолжить")
+            self.scan_summary.setText(f"Пауза. Проверено файлов: {self._scan_count}")
+            self.statusBar().showMessage("Сканирование приостановлено. Нажмите «Продолжить».")
+
+    def _stop_scan(self) -> None:
+        controller = getattr(self, "_scan_controller", None)
+        if controller is None or not (self._scan_worker and self._scan_worker.isRunning()):
+            return
+        controller.stop()
+        self.pause_button.setEnabled(False)
+        self.stop_button.setEnabled(False)
+        self.statusBar().showMessage("Останавливаем сканирование…")
+
+    def _scan_progress(self, count: int) -> None:
+        self._scan_count = count
+        controller = getattr(self, "_scan_controller", None)
+        if controller is not None and controller.paused:
+            self.scan_summary.setText(f"Пауза. Проверено файлов: {count}")
+        elif controller is not None and not controller.stopped:
+            self.scan_summary.setText(f"Проверяется: {self._scan_path}  •  файлов: {count}")
 
     def _scan_completed(self, results) -> None:
         self.results = results
@@ -1020,6 +1204,13 @@ class VirusWallWindow(QMainWindow):
         summary = evaluate(results)
         if summary["threats_detected"]:
             self._notify(f"Обнаружено подозрительных объектов: {summary['threats_detected']}", warning=True)
+
+    def _scan_stopped(self, results) -> None:
+        self.results = results
+        self._fill_scan_results(results)
+        self._refresh_dashboard()
+        self._refresh_journal()
+        self._notify(f"Сканирование остановлено. Проверено объектов: {len(results)}")
 
     def _fill_scan_results(self, results) -> None:
         summary = evaluate(results)
@@ -1038,8 +1229,16 @@ class VirusWallWindow(QMainWindow):
     def _scan_finished(self) -> None:
         self.scan_button.setEnabled(True)
         self.quick_button.setEnabled(True)
+        self.pause_button.setEnabled(False)
+        self.stop_button.setEnabled(False)
+        self.pause_button.setText("Пауза")
         self.scan_progress.hide()
-        self.statusBar().showMessage("Сканирование завершено. Результаты — в таблице.", 8000)
+        controller = getattr(self, "_scan_controller", None)
+        if controller is not None and controller.stopped:
+            message = "Сканирование остановлено. Результаты — в таблице."
+        else:
+            message = "Сканирование завершено. Результаты — в таблице."
+        self.statusBar().showMessage(message, 8000)
 
     def _export_report(self) -> None:
         path, _ = QFileDialog.getSaveFileName(self, "Сохранить отчёт", "viruswall-report.json",
@@ -1292,14 +1491,17 @@ class VirusWallWindow(QMainWindow):
         self._notify("Сигнатура удалена")
 
     def _periodic_refresh(self) -> None:
-        self._refresh_dashboard()
-        self._refresh_journal()
         self._drain_notifications()
-        if self.tabs.currentIndex() == 3:
+        index = self.tabs.currentIndex()
+        if index == 0:
+            self._refresh_dashboard()
+        elif index == 3:
             self._refresh_processes()
-        elif self.tabs.currentIndex() == 4:
+        elif index == 4:
             self._refresh_network()
-        elif self.tabs.currentIndex() == 6:
+        elif index == 5:
+            self._refresh_journal()
+        elif index == 6:
             self._refresh_quarantine()
 
     def closeEvent(self, event) -> None:
