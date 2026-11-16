@@ -5,3 +5,21 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# runtime data
+/config.json
+/config.json.bak
+/integrity.json
+/signatures.json
+/signatures.json.*
+/quarantine/
+/viruswall.lock
+/events.jsonl
+/ui.json
+
+# local test artifacts in verification folder
+/Папка проверки/eicar.com
+/Папка проверки/eicar.com.txt
+/Папка проверки/file.txt.exe
+/Папка проверки/file.txt.sh
+/Папка проверки/invoice.pdf.exe
