@@ -1,5 +1,7 @@
 """Пассивный мониторинг соединений и пакетов локальной станции."""
 
+from __future__ import annotations
+
 from collections import deque
 from dataclasses import asdict, dataclass
 import ipaddress

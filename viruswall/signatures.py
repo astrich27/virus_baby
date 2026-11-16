@@ -1,5 +1,7 @@
 """Локальная база сигнатур: SHA-256/MD5-хэши и байтовые шаблоны без сетевого автообновления."""
 
+from __future__ import annotations
+
 import hashlib
 import json
 import os

@@ -1,5 +1,7 @@
 """Карантин: AES-256-GCM, подтверждение действий, лимиты и проверка целостности."""
 
+from __future__ import annotations
+
 from pathlib import Path
 import hashlib
 import json
