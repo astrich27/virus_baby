@@ -4,7 +4,10 @@
 защищает от другого экземпляра приложения, случайного изменения конфигурации
 и базы, и регистрирует подозрительные модификации в журнале."""
 
-import fcntl
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 import json
 import os
 from pathlib import Path
